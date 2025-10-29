@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+
+import sys
+import shutil
+import filecmp
+from pathlib import Path
+import re
+
+# usage helper
+def usage():
+    print("usage: mygit-merge <branch|commit> -m commit-message")
+    sys.exit(1)
+
+# Parse args
+args = sys.argv[1:]
+if len(args) == 1:
+    print("mygit-merge: error: empty commit message")
+    sys.exit(1)
+elif len(args) != 3 or args[1] != "-m":
+    usage()
+
+target  = args[0]
+message = args[2]
+if not message:
+    print("mygit-merge: error: empty commit message")
+    sys.exit(1)
+
+# Ensure repo exists
+repo = Path(".mygit")
+if not repo.is_dir():
+    print("mygit-merge: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+branches_root = repo / "branches"
+head_file     = repo / "HEAD"
+if not head_file.exists():
+    print("mygit-merge: error: this command can not be run until after the first commit")
+    sys.exit(1)
+current = head_file.read_text().strip()
+
+# Determine target commit
+branch_head = branches_root / target / "HEAD"
+if branch_head.exists():
+    merge_id  = branch_head.read_text().strip()
+    merge_dir = repo / "repository" / merge_id
+elif target.isdigit() and (repo / "repository" / target).is_dir():
+    merge_id  = target
+    merge_dir = repo / "repository" / merge_id
+else:
+    print(f"mygit-merge: error: unknown branch '{target}'")
+    sys.exit(1)
+
+# Current commit
+current_id = (branches_root / current / "HEAD").read_text().strip()
+cur_dir    = repo / "repository" / current_id
+
+# Fast-forward merge
+try:
+    if int(merge_id) > int(current_id):
+        index_dir = repo / "index"
+        # clear index
+        for f in index_dir.iterdir():
+            f.unlink()
+        repo_files = {
+            f.name for f in merge_dir.iterdir()
+            if f.is_file() and f.name not in ('commit_message', 'parent', 'merge_parent')
+        }
+        wd = Path()
+        # remove wd files not in snapshot
+        for name in {p.name for p in wd.iterdir() if p.is_file()} - repo_files:
+            Path(name).unlink()
+        # copy in merge snapshot
+        for name in repo_files:
+            src = merge_dir / name
+            shutil.copy(src, index_dir / name)
+            shutil.copy(src, wd / name)
+        # update HEAD
+        (branches_root / current / "HEAD").write_text(merge_id)
+        print("Fast-forward: no commit created")
+        sys.exit(0)
+except ValueError:
+    pass
+
+# Three-way merge
+c_int     = int(current_id)
+m_int     = int(merge_id)
+base_int  = min(c_int, m_int) - 1
+base_dir  = None
+if base_int >= 0:
+    bd = repo / "repository" / str(base_int)
+    if bd.is_dir():
+        base_dir = bd
+
+c_files = {
+    f.name for f in cur_dir.iterdir()
+    if f.is_file() and f.name not in ('commit_message','parent','merge_parent')
+}
+m_files = {
+    f.name for f in merge_dir.iterdir()
+    if f.is_file() and f.name not in ('commit_message','parent','merge_parent')
+}
+b_files = set()
+if base_dir:
+    b_files = {
+        f.name for f in base_dir.iterdir()
+        if f.is_file() and f.name not in ('commit_message','parent','merge_parent')
+    }
+
+# Detect conflicts
+conflicts = []
+for name in c_files & m_files:
+    if base_dir and name in b_files:
+        c_changed = not filecmp.cmp(base_dir/name,  cur_dir/name,   shallow=False)
+        m_changed = not filecmp.cmp(base_dir/name, merge_dir/name,  shallow=False)
+        if c_changed and m_changed:
+            conflicts.append(name)
+
+if conflicts:
+    print("mygit-merge: error: These files can not be merged:")
+    for n in sorted(conflicts):
+        print(n)
+    sys.exit(1)
+
+# Build merged index
+index_dir = repo / "index"
+for f in index_dir.iterdir():
+    f.unlink()
+all_names = sorted(c_files | m_files)
+for name in all_names:
+    if name in c_files and name in m_files and base_dir and name in b_files:
+        changed_c = not filecmp.cmp(base_dir/name, cur_dir/name, shallow=False)
+        src = cur_dir/name if changed_c else merge_dir/name
+    elif name in m_files:
+        src = merge_dir/name
+    else:
+        src = cur_dir/name
+    shutil.copy(src, index_dir / name)
+
+# Create merge commit
+db      = repo / "repository"
+commits = [d for d in db.iterdir() if d.is_dir() and d.name.isdigit()]
+new_id  = str(len(commits))
+new_dir = db / new_id
+new_dir.mkdir()
+for f in index_dir.iterdir():
+    shutil.copy(f, new_dir / f.name)
+
+(new_dir / "commit_message").write_text(message)
+(new_dir / "parent").write_text(current_id)
+(new_dir / "merge_parent").write_text(merge_id)
+(branches_root / current / "HEAD").write_text(new_id)
+print(f"Committed as commit {new_id}")
+
+# Update working directory
+wd = Path()
+# remove files not in merged commit
+for name in {p.name for p in wd.iterdir() if p.is_file()} - set(all_names):
+    Path(name).unlink()
+# copy merged files into wd
+for name in all_names:
+    shutil.copy((new_dir / name), wd / name)

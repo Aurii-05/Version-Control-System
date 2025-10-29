@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+
+import sys
+from pathlib import Path
+import re
+import shutil
+
+# Ensure repository exists
+repo = Path('.mygit')
+if not repo.is_dir():
+    print("mygit-add: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Prepare global index directory
+index_dir = repo / 'index'
+index_dir.mkdir(exist_ok=True)
+
+# Require at least one filename
+if len(sys.argv) == 1:
+    print("usage: mygit-add <filenames>")
+    sys.exit(1)
+
+pattern = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9-._]*$')
+
+# First pass: validate all files
+for filename in sys.argv[1:]:
+    if pattern.match(filename) is None:
+        print(f"mygit-add: error: invalid filename '{filename}'")
+        sys.exit(1)
+
+# Second pass: all files are valid, so add them
+for filename in sys.argv[1:]:
+    source = Path(filename)
+    dest   = index_dir / filename
+
+    if not source.exists():
+        if dest.exists():
+            dest.unlink()
+            continue
+        print(f"mygit-add: error: can not open '{filename}'")
+        sys.exit(1)
+
+    if not source.is_file():
+        print(f"mygit-add: error: '{filename}' is not a regular file")
+        sys.exit(1)
+
+    try:
+        shutil.copy(source, dest)
+    except OSError:
+        print(f"mygit-add: error: can not open '{filename}'")
+        sys.exit(1)

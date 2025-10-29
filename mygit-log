@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+
+import sys
+from pathlib import Path
+
+# Ensure repository exists
+repo = Path(".mygit")
+if not repo.is_dir():
+    print("mygit-log: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Ensure after first commit
+head = repo / "HEAD"
+if not head.exists():
+    sys.exit(1)
+
+# Args check
+if len(sys.argv) != 1:
+    print("usage: mygit-log")
+    sys.exit(1)
+
+# Show only commits reachable from HEAD, in proper order
+global_repo   = repo / "repository"
+branches_root = repo / "branches"
+current       = head.read_text().strip()
+branch_head   = branches_root / current / "HEAD"
+
+tip = branch_head.read_text().strip()
+
+def get_chain(start):
+    chain = []
+    curr  = start
+    while True:
+        chain.append(curr)
+        cdir        = global_repo / curr
+        parent_file = cdir / "parent"
+        if parent_file.exists():
+            curr = parent_file.read_text().strip()
+        else:
+            break
+    return chain
+
+# first‐parent history
+p1chain = get_chain(tip)
+
+# second‐parent history
+merge_file = global_repo / tip / "merge_parent"
+p2chain   = []
+if merge_file.exists():
+    curr = merge_file.read_text().strip()
+    while True:
+        p2chain.append(curr)
+        cdir        = global_repo / curr
+        parent_file = cdir / "parent"
+        if parent_file.exists():
+            curr = parent_file.read_text().strip()
+        else:
+            break
+
+# unique and common ancestors
+p1set      = set(p1chain)
+p2set      = set(p2chain)
+common_set = p1set & p2set
+
+unique_p1 = [cid for cid in p1chain if cid not in common_set]
+unique_p2 = [cid for cid in p2chain if cid not in common_set]
+common    = [cid for cid in p1chain if cid in common_set]
+
+# print in order: tip, unique first-parent, unique second-parent, then common
+for cid in [tip] + unique_p1[1:] + unique_p2 + common:
+    msg = (global_repo / cid / "commit_message").read_text()
+    print(f"{cid} {msg}")

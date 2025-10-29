@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+
+import sys
+import shutil
+import filecmp
+from pathlib import Path
+
+# Function to update index with the working directory
+def update_index(index_path):
+    index_f = [f.name for f in index_path.iterdir() if f.is_file()]
+    p = Path()
+    for filename in index_f:
+        working_file = p / filename
+        index_file   = index_path / filename
+        if working_file.exists():
+            shutil.copy(working_file, index_file)
+        else:
+            index_file.unlink()
+    return None
+
+# Ensure repository exists
+repo = Path(".mygit")
+if not repo.is_dir():
+    print("mygit-commit: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Determine current branch; initialize on first commit
+head         = repo / "HEAD"
+branches_dir = repo / "branches"
+if head.exists():
+    current = head.read_text().strip()
+else:
+    branches_dir.mkdir(exist_ok=True)
+    current = "trunk"
+    (branches_dir / current).mkdir()
+    head.write_text(current)
+
+# Read old commit id for parent pointer
+branch_file = branches_dir / current / "HEAD"
+old_commit = None
+if branch_file.exists():
+    old_commit = branch_file.read_text().strip()
+
+# Paths
+index_path      = repo / "index"
+repository_path = repo / "repository"
+repository_path.mkdir(exist_ok=True)
+
+# Args check
+update = False
+if len(sys.argv) == 4:
+    if sys.argv[1] != "-a" or sys.argv[2] != "-m":
+        print("usage: mygit-commit [-a] -m commit-message")
+        sys.exit(1)
+    update = True
+elif len(sys.argv) == 3:
+    if sys.argv[1] != "-m":
+        print("usage: mygit-commit [-a] -m commit-message")
+        sys.exit(1)
+else:
+    print("usage: mygit-commit [-a] -m commit-message")
+    sys.exit(1)
+
+if update:
+    update_index(index_path)
+
+message = sys.argv[3] if update else sys.argv[2]
+
+# Check if index is empty only if first commit otherwise compare index to last commit
+commits = [d for d in repository_path.iterdir() if d.is_dir() and d.name.isdigit()]
+if not commits:
+    if not any(index_path.iterdir()):
+        print("nothing to commit")
+        sys.exit(1)
+else:
+    last = max(commits, key=lambda d: int(d.name))
+    cmp  = filecmp.dircmp(index_path, last, ignore=["commit_message", "parent", "merge_parent"])
+    if not cmp.left_only and not cmp.right_only and not cmp.diff_files:
+        print("nothing to commit")
+        sys.exit(1)
+
+# Create new commit directory
+commit_id  = len(commits)
+commit_dir = repository_path / str(commit_id)
+commit_dir.mkdir(exist_ok=False)
+
+# Copy files from index to commit dir
+for index_file in index_path.iterdir():
+    shutil.copy(index_file, commit_dir / index_file.name)
+
+# Write commit message
+with open(commit_dir / "commit_message", "w") as file:
+    file.write(message)
+
+# Write parent pointer if exists
+if old_commit is not None:
+    (commit_dir / "parent").write_text(old_commit)
+
+# Update branch pointer
+branch_file.write_text(str(commit_id))
+
+print(f"Committed as commit {commit_id}")

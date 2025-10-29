@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+
+import sys
+import filecmp
+import glob
+from pathlib import Path
+import re
+
+# Ensure repository exists
+repo_dir = Path(".mygit")
+if not repo_dir.is_dir():
+    print("mygit-rm: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Use global index and repository
+index_dir        = repo_dir / 'index'
+repo_commits_dir = repo_dir / 'repository'
+# Make sure they exist
+index_dir.mkdir(parents=True, exist_ok=True)
+repo_commits_dir.mkdir(parents=True, exist_ok=True)
+
+# Parse options
+force = False
+cached = False
+raw_filenames = []
+for arg in sys.argv[1:]:
+    if arg == '--force':
+        force = True
+    elif arg == '--cached':
+        cached = True
+    elif arg.startswith('-'):
+        print("usage: mygit-rm [--force] [--cached] <filenames>")
+        sys.exit(1)
+    else:
+        raw_filenames.append(arg)
+
+if not raw_filenames:
+    print("usage: mygit-rm [--force] [--cached] <filenames>")
+    sys.exit(1)
+
+# Expand glob patterns
+filenames = []
+for pat in raw_filenames:
+    if any(c in pat for c in ('*','?','[')):
+        matches = glob.glob(pat)
+        filenames.extend(matches if matches else [pat])
+    else:
+        filenames.append(pat)
+
+# First pass: validate all filenames
+pattern = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9-._]*$')
+for f in filenames:
+    if not pattern.match(f):
+        print(f"mygit-rm: error: invalid filename '{f}'")
+        sys.exit(1)
+    if not (index_dir / f).exists():
+        print(f"mygit-rm: error: '{f}' is not in the mygit repository")
+        sys.exit(1)
+
+# Find last commit
+commits = [d for d in repo_commits_dir.iterdir() if d.is_dir() and d.name.isdigit()]
+last_commit = max(commits, key=lambda d: int(d.name)) if commits else None
+
+# Second pass: check for potential data loss
+for f in filenames:
+    index_file  = index_dir / f
+    wd_file     = Path(f)
+    commit_file = (last_commit / f) if last_commit else None
+    commit_exists = commit_file.exists() if commit_file else False
+    wd_exists     = wd_file.exists()
+
+    if not force:
+        # Unstaged modification conflict
+        if commit_exists and not cached:
+            if filecmp.cmp(commit_file, index_file, shallow=False) \
+               and wd_exists \
+               and not filecmp.cmp(commit_file, wd_file, shallow=False):
+                print(f"mygit-rm: error: '{f}' in the repository is different to the working file")
+                sys.exit(1)
+        # Staged-only conflict
+        if not cached and wd_exists and filecmp.cmp(index_file, wd_file, shallow=False) \
+           and (not commit_exists or not filecmp.cmp(commit_file, index_file, shallow=False)):
+            print(f"mygit-rm: error: '{f}' has staged changes in the index")
+            sys.exit(1)
+        # Index vs both commit and working conflict
+        if commit_exists:
+            if (not (wd_exists and filecmp.cmp(index_file, wd_file, shallow=False))) \
+               and not filecmp.cmp(commit_file, index_file, shallow=False):
+                print(f"mygit-rm: error: '{f}' in index is different to both the working file and the repository")
+                sys.exit(1)
+
+# Perform removals
+for f in filenames:
+    (index_dir / f).unlink()
+    if not cached and Path(f).exists():
+        Path(f).unlink()

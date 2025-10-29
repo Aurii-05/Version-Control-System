@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+
+import sys
+import filecmp
+from pathlib import Path
+import re
+
+# usage helper
+def usage():
+    print("usage: mygit-status")
+    sys.exit(1)
+
+# No args
+if len(sys.argv) != 1:
+    usage()
+
+# Repo check
+repo = Path('.mygit')
+if not repo.is_dir():
+    print("mygit-status: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Determine last commit
+head_file = repo / 'HEAD'
+commit_dir = None
+repo_files = set()
+if head_file.exists():
+    current = head_file.read_text().strip()
+    branches_root = repo / 'branches'
+    branch_head = branches_root / current / 'HEAD'
+    if branch_head.exists():
+        commit_id = branch_head.read_text().strip()
+        candidate = repo / 'repository' / commit_id
+        if candidate.is_dir():
+            commit_dir = candidate
+            repo_files = {
+                f.name for f in commit_dir.iterdir()
+                if f.is_file() and f.name not in ('commit_message','parent','merge_parent')
+            }
+
+# Paths
+index_dir = repo / 'index'
+index_dir.mkdir(exist_ok=True)
+
+# File sets
+wd_files  = {f.name for f in Path().iterdir() if f.is_file()}
+idx_files = {f.name for f in index_dir.iterdir() if f.is_file()}
+
+# Valid filenames
+pattern   = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9\-._]*$')
+all_files = sorted(wd_files | idx_files | repo_files)
+all_files = [n for n in all_files if pattern.match(n) and n not in ('commit_message','parent','merge_parent')]
+
+# Cases (finding all these made me cry):
+for name in all_files:
+    in_wd   = name in wd_files
+    in_idx  = name in idx_files
+    in_repo = name in repo_files
+
+    wd_idx_same = in_wd and in_idx and filecmp.cmp(Path(name), index_dir / name, shallow=False)
+
+    idx_repo_same = False
+    if commit_dir is not None and in_idx and in_repo:
+        idx_repo_same = filecmp.cmp(index_dir / name, commit_dir / name, shallow=False)
+
+    wd_repo_same = False
+    if commit_dir is not None and in_wd and in_repo:
+        wd_repo_same = filecmp.cmp(Path(name), commit_dir / name, shallow=False)
+
+    if not in_idx and not in_repo:
+        status = 'untracked'
+    elif in_repo and not in_idx and in_wd:
+        status = 'deleted from index'
+    elif in_repo and not in_idx and not in_wd:
+        status = 'file deleted, deleted from index'
+    elif in_repo and in_idx and not in_wd:
+        status = 'file deleted' if idx_repo_same else 'file deleted, changes staged for commit'
+    elif in_idx and not in_repo:
+        if in_wd:
+            status = 'added to index' + (', file changed' if not wd_idx_same else '')
+        else:
+            status = 'added to index, file deleted'
+    else:
+        if wd_idx_same and idx_repo_same:
+            status = 'same as repo'
+        elif not wd_idx_same and idx_repo_same:
+            status = 'file changed, changes not staged for commit'
+        elif wd_idx_same and not idx_repo_same:
+            status = 'file changed, changes staged for commit'
+        else:
+            status = 'file changed, different changes staged for commit'
+
+    print(f"{name} - {status}")

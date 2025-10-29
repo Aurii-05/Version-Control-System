@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+
+import sys
+import re
+from pathlib import Path
+
+# Ensure repository exists
+repo = Path(".mygit")
+if not repo.is_dir():
+    print("mygit-show: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Args check
+if len(sys.argv) != 2 or ':' not in sys.argv[1]:
+    print("usage: mygit-show <commit>:<filename>")
+    sys.exit(1)
+
+# Parse commit and filename
+arg = sys.argv[1]
+commit_n, filename = arg.split(':', 1)
+
+# Validate filename
+pattern = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9\-._]*$')
+if not pattern.match(filename):
+    print(f"mygit-show: error: invalid filename '{filename}'")
+    sys.exit(1)
+
+# Directories
+index_dir = repo / "index"
+repo_dir  = repo / "repository"
+
+if commit_n == "":
+    # Show from index
+    try:
+        print((index_dir / filename).read_text(), end='')
+    except FileNotFoundError:
+        print(f"mygit-show: error: '{filename}' not found in index")
+        sys.exit(1)
+else:
+    # Show from a named commit
+    if not commit_n.isdigit() or not (repo_dir / commit_n).is_dir():
+        print(f"mygit-show: error: unknown commit '{commit_n}'")
+        sys.exit(1)
+
+    file_in_commit = repo_dir / commit_n / filename
+    if not file_in_commit.exists():
+        print(f"mygit-show: error: '{filename}' not found in commit {commit_n}")
+        sys.exit(1)
+
+    print(file_in_commit.read_text(), end='')

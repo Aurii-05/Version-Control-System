@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+
+import sys
+import re
+import filecmp
+import shutil
+from pathlib import Path
+
+# Ensure repository exists
+repo = Path('.mygit')
+if not repo.is_dir():
+    print("mygit-checkout: error: mygit repository directory .mygit not found")
+    sys.exit(1)
+
+# Must have at least one commit
+branches_root = repo / 'branches'
+head_file     = repo / 'HEAD'
+if not branches_root.is_dir() or not head_file.exists():
+    print("mygit-checkout: error: this command can not be run until after the first commit")
+    sys.exit(1)
+
+# Check args
+if len(sys.argv) != 2:
+    print("usage: mygit-checkout <branch-name>")
+    sys.exit(1)
+branch = sys.argv[1]
+
+# Validate branch name
+pattern = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9-._]*$')
+if not pattern.match(branch):
+    print(f"mygit-checkout: error: invalid branch '{branch}'")
+    sys.exit(1)
+
+branch_dir = branches_root / branch
+pointer    = branch_dir / 'HEAD'
+if not pointer.exists():
+    print(f"mygit-checkout: error: unknown branch '{branch}'")
+    sys.exit(1)
+
+# Determine old and new commits
+old_branch     = head_file.read_text().strip()
+old_commit_id  = (branches_root / old_branch / 'HEAD').read_text().strip()
+new_commit_id  = pointer.read_text().strip()
+old_snap = repo / 'repository' / old_commit_id
+new_snap = repo / 'repository' / new_commit_id
+wd       = Path()
+
+# Gather file sets, skipping commit_message
+old_files = {f.name for f in old_snap.iterdir() if f.is_file() and f.name not in ('commit_message','parent','merge_parent')}
+new_files = {f.name for f in new_snap.iterdir() if f.is_file() and f.name not in ('commit_message','parent','merge_parent')}
+
+# Conflict detection
+conflicts = []
+for name in old_files - new_files:
+    wf = wd / name
+    if wf.exists() and not filecmp.cmp(wf, old_snap / name, shallow=False):
+        conflicts.append(name)
+for name in new_files - old_files:
+    wf = wd / name
+    if wf.exists() and not filecmp.cmp(wf, new_snap / name, shallow=False):
+        conflicts.append(name)
+for name in old_files & new_files:
+    wf = wd / name
+    if wf.exists():
+        if not filecmp.cmp(wf, old_snap / name, shallow=False) \
+        and not filecmp.cmp(old_snap / name, new_snap / name, shallow=False):
+            conflicts.append(name)
+if conflicts:
+    print("mygit-checkout: error: Your changes to the following files would be overwritten by checkout:")
+    for n in sorted(conflicts):
+        print(n)
+    sys.exit(1)
+
+# Update index entries for branch switch
+index_dir = repo / 'index'
+# remove files no longer in new commit
+for name in old_files - new_files:
+    f = index_dir / name
+    if f.exists():
+        f.unlink()
+# add new files from new commit
+for name in new_files - old_files:
+    src = new_snap / name
+    shutil.copy(src, index_dir / name)
+# update files changed between commits
+for name in old_files & new_files:
+    if not filecmp.cmp(old_snap / name, new_snap / name, shallow=False):
+        shutil.copy(new_snap / name, index_dir / name)
+
+# Remove files that disappeared in the new snapshot
+for name in old_files - new_files:
+    p = wd / name
+    if p.is_file() and not p.name.startswith('mygit-'):
+        p.unlink()
+
+# Restore new or changed files from the new snapshot
+for name in new_files:
+    if name in ('commit_message','parent','merge_parent'):
+        continue
+    src  = new_snap / name
+    dest = wd / name
+    if not dest.exists() or not filecmp.cmp(old_snap / name, src, shallow=False):
+        shutil.copy(src, dest)
+
+# Update HEAD and report
+head_file.write_text(branch)
+print(f"Switched to branch '{branch}'")
